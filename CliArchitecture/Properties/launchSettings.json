@@ -1,0 +1,8 @@
+{
+  "profiles": {
+    "CliArchitecture": {
+      "commandName": "Project",
+      "commandLineArgs": "run"
+    }
+  }
+}
