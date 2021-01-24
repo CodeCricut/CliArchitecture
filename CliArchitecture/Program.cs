@@ -7,84 +7,94 @@ using Serilog;
 using Serilog.Extensions.Logging;
 using System;
 using System.IO;
+using System.Threading;
 using System.Threading.Tasks;
 
 namespace CliArchitecture
 {
 	class Program
 	{
+		private static string[] _args = new string[0];
 		static async Task<int> Main(string[] args)
 		{
-			/* The host being built encapsulates app resources such as:
-			 *	- services
-			 *	- logging
-			 *	- configuration
-			 *	- hosted services (where hosted services are tasks that have an entry and exit procedure)
-			 */
-			var builder = new HostBuilder()
-				// Set up the configuration for the host
-				.ConfigureAppConfiguration(configBuilder =>
-				{
-					configBuilder.SetBasePath(Directory.GetCurrentDirectory())
-					   .AddJsonFile(AppDomain.CurrentDomain.BaseDirectory + "appsettings.json", optional: false, reloadOnChange: true)
-					   .AddEnvironmentVariables();
-				})
-				// Register services for the host
-				.ConfigureServices((hostContext, services) =>
-				{
-					// The host has access to the configuration
-					var configuration = hostContext.Configuration;
+			_args = args;
 
-					services.AddSerilogLogger(configuration);
+			IHostBuilder builder = BuildHostBuilder();
 
-					services.AddProgramService<Application, ApplicationOptions>(args);
-					services.AddProgramService<ApplicationVerb, ApplicationVerbOptions>(args);
-				});
-
+			using IHost host = builder.Build();
 			try
 			{
 				// Builds and starts the host, but will end when CTRL+C is entered.
 				// If the CTRL+C to shutdown process is not desired, then use builder.StartAsync()
-				await builder.RunConsoleAsync();
+				//await builder.RunConsoleAsync();
+				
+				await host.StartAsync();
 			}
-			catch (OperationCanceledException) { }
 			catch (Exception ex)
 			{
-				Console.WriteLine(ex.Message);
+				var logger = host?.Services.GetService<ILogger<Program>>();
+				if (logger != null)
+				{
+					logger.LogError(ex.Message);
+				} else
+				{
+					Console.WriteLine($"FATAL ERROR: {ex.Message}");
+				}
 				return 1;
 			}
-			
+
 			return 0;
 		}
 
-		private static async Task ManualDIAndHost()
+		private static IHostBuilder BuildHostBuilder()
 		{
-			// =============== MANUALLY CREATING DI PROVIDER =============== //
-			// Create service collection
-			var services = new ServiceCollection();
+			/* The host being built encapsulates app resources such as:
+						 *	- services
+						 *	- logging
+						 *	- configuration
+						 *	- hosted services (where hosted services are tasks that have an entry and exit procedure)
+						 */
+			var builder = new HostBuilder()
+				.ConfigureAppConfiguration(Configure)
+				.ConfigureServices(ConfigureServices);
+			return builder;
+		}
 
-			// Services could be registered at this point
+		/// <summary>
+		/// Set up the configuration for the host.
+		/// </summary>
+		private static void Configure(IConfigurationBuilder configBuilder)
+		{
+			configBuilder.SetBasePath(Directory.GetCurrentDirectory())
+				.AddJsonFile(AppDomain.CurrentDomain.BaseDirectory + "appsettings.json", optional: false, reloadOnChange: true)
+				.AddEnvironmentVariables();
+		}
 
-			// Configuration
-			var configurationBuilder = new ConfigurationBuilder();
+		/// <summary>
+		/// Register services for the host.
+		/// </summary>
+		private static void ConfigureServices(HostBuilderContext hostContext, IServiceCollection services)
+		{
+			// Configure app to use a custom shutdown timeout
+			services.Configure((Action<HostOptions>)(option =>
+			{
+				// Default is 5; If shutdown is requested and hosted services don't stop before the timeout, they will be forced to stop
+				option.ShutdownTimeout = System.TimeSpan.FromSeconds(3);
+			}));
 
-			// // Add default config file
-			configurationBuilder.AddJsonFile("appsettings.json", optional: true);
+			// The host has access to the configuration.
+			var configuration = hostContext.Configuration;
 
-			// // Build Configuration
-			IConfiguration configuration = configurationBuilder.Build();
+			services.AddSerilogLogger(configuration);
 
-			// // Inject configuration into DI system
-			services.AddSingleton(configuration);
+			// Main program services responsible for doing things based on CLI args.
+			services.AddProgramService<Application, ApplicationOptions>(_args)
+				.AddProgramService<ApplicationVerb, ApplicationVerbOptions>(_args);
 
-			// Build Service Provider
-			var provider = services.BuildServiceProvider();
-
-			// One (nonstandard) way of making this provider globally accessible is to have a public static IProvider property somewhere.
-			// The standard way is constructor injection
-
-			// At this point, the DI system is set up
-			var myConfig = provider.GetService<IConfiguration>();
+			// Services showing off automatically registered services such as IHostEnvironment.
+			services.AddHostedService<EnvironmentHostedService>()
+				.AddHostedService<LifetimeEventsHostedService>()
+				.AddHostedService<LifetimeHostedService>();
 		}
 	}
 }
